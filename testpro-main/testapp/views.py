@@ -68,6 +68,8 @@ from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from django.utils.text import slugify
 
+from ultralytics import YOLO
+
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from scipy.special import softmax
@@ -342,16 +344,16 @@ class SyncModel(torch.nn.Module):
         x = self.classifier_bn_pool(x).squeeze(-1)
         return torch.sigmoid(self.classifier_fc(x)).squeeze(-1)
 
-# Ensure face_detector and facemark are loaded (from your original code)
-face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-facemark = cv2.face.createFacemarkLBF()
-try:
-    facemark_model_path = os.path.join(settings.BASE_DIR, 'models/lbfmodel.yaml')
-    # Use resource_filename from pkg_resources if you need to load from an installed package
-    # For local dev, direct path is fine.
-    facemark.loadModel(facemark_model_path)
-except Exception as e:
-    print(f"Warning: Could not load facemark model at {facemark_model_path}. Lip sync check might be affected. Error: {e}")
+# # Ensure face_detector and facemark are loaded (from your original code)
+# face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+# facemark = cv2.face.createFacemarkLBF()
+# try:
+#     facemark_model_path = os.path.join(settings.BASE_DIR, 'models/lbfmodel.yaml')
+#     # Use resource_filename from pkg_resources if you need to load from an installed package
+#     # For local dev, direct path is fine.
+#     facemark.loadModel(facemark_model_path)
+# except Exception as e:
+#     print(f"Warning: Could not load facemark model at {facemark_model_path}. Lip sync check might be affected. Error: {e}")
 
 
 class Deepfake(View):
@@ -1426,70 +1428,86 @@ class Deepfake(View):
                 "status": "error"
             }, status=500)
 
-
 class Posture(View):
+
     def __init__(self):
         super().__init__()
+        physical_devices = tf.config.list_physical_devices('GPU')
+        if physical_devices:
+            try:
+                tf.config.experimental.set_memory_growth(physical_devices[0], True)
+                print("✅ GPU detected and configured for TensorFlow")
+            except Exception as e:
+                print(f"⚠️ GPU configuration error: {e}. Falling back to CPU.")
+        else:
+            print("❌ No GPU detected for TensorFlow. Using CPU.")
 
-        self.emotion_model = tf.keras.models.load_model("/home/student/new_api/testpro-main/models/Ar-emotiondetector.h5")
-        self.emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise']
-
+    # ---------- LABELS & GLOBALS ----------
+        self.emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral', 'No Emotion']
         self.log_data = []
-        self.OPTIMIZE_EVERY_N_FRAMES = 3  # Optimize every N frames
-        self.last_posture_score = 50
+        self.pose_vector_log = []
+        self.lstm_input_log = []
+        self.OPTIMIZE_EVERY_N_FRAMES = 3  # Optimize every 3rd frame
+        self.last_posture_score = 50  # Cache posture score
+        self.SMOOTHING_WINDOW = 10  # Frames for emotion smoothing (~0.33s at 30 FPS)
+        self.SMOOTHING_ALPHA = 0.3  # EMA smoothing factor
+        self.LSTM_SEQUENCE_LENGTH = 10  # Frames per LSTM sequence
+        self.emotion_probs_buffer = deque(maxlen=self.SMOOTHING_WINDOW)  # Buffer for emotion probabilities
 
-
-        # Initialize MediaPipe
+    # ---------- Mediapipe Setup (Pose Only) ----------
         self.mp_pose = mp.solutions.pose
-        self.mp_face_detection = mp.solutions.face_detection
         self.mp_drawing = mp.solutions.drawing_utils
 
-        # self.yolo_cfg = "/home/student/new_api/yolov4.cfg"
-        # self.yolo_weights = "/home/student/new_api/yolov4.weights"
-        # self.net = cv2.dnn.readNet(self.yolo_weights, self.yolo_cfg)
+        # ---------- Load Emotion Detection Model ----------
+        self.emotion_model = tf.keras.models.load_model("/home/student/new_api/testpro-main/models/Ar-emotiondetector.h5")
 
-        # self.layer_names = self.net.getLayerNames()
-        # self.output_layers = [self.layer_names[i - 1] for i in self.net.getUnconnectedOutLayers().flatten()]
+        # ---------- Load YOLOv10 Face Detection Model ----------
+        self.yolo_model = YOLO("/home/student/faceof_test/testpro-main/models/yolov10n-face.pt")  # Load pre-trained face model
 
-    def preprocess_face(self, face_img):
+    def preprocess_face(self,face_img):
         face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
-        face_img = cv2.equalizeHist(face_img)  # Histogram equalization for robustness
+        face_img = cv2.equalizeHist(face_img)
         face_img = cv2.resize(face_img, (48, 48))
         face_img = tf.keras.preprocessing.image.img_to_array(face_img) / 255.0
         return np.expand_dims(face_img, axis=0)
 
-    # Angle calculation
-    def calculate_angle(self, a, b, c):
+    def calculate_angle(self,a, b, c):
         a, b, c = np.array(a), np.array(b), np.array(c)
         ba, bc = a - b, c - b
         cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
         return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
-    
-    # def yolo_detect(self, frame):
-    #     height, width = frame.shape[:2]
-    #     blob = cv2.dnn.blobFromImage(frame, 1 / 255, (640, 640), swapRB=True, crop=False)
-    #     self.net.setInput(blob)
-    #     outputs = self.net.forward(self.output_layers)
-    #     boxes = []
-    #     for output in outputs:
-    #         for detection in output:
-    #             scores = detection[5:]
-    #             class_id = np.argmax(scores)
-    #             confidence = scores[class_id]
-    #             if class_id == 0 and confidence > 0.5:  # Class ID 0 is typically 'person' in YOLO
-    #                 cx, cy, w, h = detection[0:4] * np.array([width, height, width, height])
-    #                 x, y = int(cx - w / 2), int(cy - h / 2)
-    #                 boxes.append([x, y, int(w), int(h)])
-    #     return boxes
-    
-    def draw_text(self, img, text, pos, color=(0, 255, 0), size=0.7, thickness=2):
+
+    def draw_text(self,img, text, pos, color=(0, 255, 0), size=0.7, thickness=2):
         cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, size, color, thickness, cv2.LINE_AA)
 
-    def draw_warning(self, img, text, pos):
-        cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3, cv2.LINE_AA)
+    def draw_warning(self,img, text, pos):
+        cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
+
+    def extract_pose_vector(self,landmarks, width, height):
+        """
+        Extracts 66D [x1, y1, ..., x33, y33] pose vector scaled to pixel space.
+        """
+        vec = []
+        for lm in landmarks:
+            vec.append(lm.x * width)
+            vec.append(lm.y * height)
+        return vec
+
+    def smooth_emotion_probs(self,new_probs, buffer):
+        """
+        Apply exponential moving average to emotion probabilities.
+        """
+        alpha=self.SMOOTHING_ALPHA
+        buffer.append(new_probs)
+        if len(buffer) < 2:
+            return new_probs
+        smoothed = np.zeros_like(new_probs)
+        for probs in buffer:
+            smoothed = alpha * probs + (1 - alpha) * smoothed
+        return smoothed
 
     # ---------- OPTIMIZERS ----------
-    def grey_wolf_optimizer(self, fitness_func, bounds, num_agents=3, max_iter=3, angles=None):
+    def grey_wolf_optimizer(self,fitness_func, bounds, num_agents=3, max_iter=3, angles=None):
         dim = len(bounds)
         alpha = np.zeros(dim)
         alpha_score = float("inf")
@@ -1506,11 +1524,11 @@ class Posture(View):
                 for j in range(dim):
                     r1, r2 = np.random.rand(), np.random.rand()
                     A1, C1 = 2 * a * r1 - a, 2 * r2
-                    D_alpha = np.abs(C1 * alpha[j] - wolves[i][j])
+                    D_alpha = abs(C1 * alpha[j] - wolves[i][j])
                     wolves[i][j] = alpha[j] - A1 * D_alpha
         return alpha
 
-    def grasshopper_optimizer(self, fitness_func, bounds, num_agents=3, max_iter=3, angles=None):
+    def grasshopper_optimizer(self,fitness_func, bounds, num_agents=3, max_iter=3, angles=None):
         dim = len(bounds)
         c_max, c_min = 1.0, 0.00004
         positions = np.random.rand(num_agents, dim)
@@ -1528,7 +1546,7 @@ class Posture(View):
             best_pos = positions[np.argmin(fitness)].copy()
         return best_pos
 
-    def particle_swarm_optimizer(self, fitness_func, bounds, num_particles=3, max_iter=3, angles=None):
+    def particle_swarm_optimizer(self,fitness_func, bounds, num_particles=3, max_iter=3, angles=None):
         dim = len(bounds)
         particles = np.random.rand(num_particles, dim)
         velocities = np.zeros_like(particles)
@@ -1536,49 +1554,56 @@ class Posture(View):
             particles[:, i] = particles[:, i] * (bounds[i][1] - bounds[i][0]) + bounds[i][0]
         p_best = particles.copy()
         p_best_scores = np.array([fitness_func(p, angles) for p in particles])
-        g_best = p_best[np.argmax(p_best_scores)]
+        g_best = p_best[np.argmin(p_best_scores)]
         for t in range(max_iter):
             for i in range(num_particles):
                 fitness = fitness_func(particles[i], angles)
                 if fitness < p_best_scores[i]:
                     p_best_scores[i], p_best[i] = fitness, particles[i].copy()
-            g_best = p_best[np.argmax(p_best_scores)]
+            g_best = p_best[np.argmin(p_best_scores)]
             for i in range(num_particles):
                 r1, r2 = np.random.rand(), np.random.rand()
-                velocities[i] = [0.5 * velocities[i] + 0.8 * r1 * (p_best[i] - particles[i]) + 0.9 * r2 * (g_best - particles[i])]
+                velocities[i] = 0.5 * velocities[i] + 0.8 * r1 * (p_best[i] - particles[i]) + 0.9 * r2 * (g_best - particles[i])
                 particles[i] += velocities[i]
         return g_best
 
-    def fitness_function(self, params, angles):
+    def fitness_function(self,params, angles):
+        ideal = np.array([90, 60, 45, 120])  # Back, neck, shoulder, elbow
+        weights = [1.0, 1.2, 0.8, 1.0]
+        error = np.sum(((np.array(angles) - ideal) ** 2) * weights)
         posture_score = params[0]
-        target_angles = [90, 60]  # Ideal back and neck angles
-        angle_diff = np.sum((np.array(angles) - np.array(target_angles)).sum() **2)
-        return angle_diff + abs(posture_score - 50)
+        return error + abs(posture_score - 50)
 
-    def optimize_posture_score(self, back_angle, neck_angle, frame_num):
-        
+    def optimize_posture_score(self,angles, frame_num):
         if frame_num % self.OPTIMIZE_EVERY_N_FRAMES == 0:
             bounds = [(0, 100)]
-            angles = [back_angle, neck_angle]
-            gwo_score = self.grey_wolf_optimizer(self.fitness_function, bounds, num_agents=3, max_iter=3, angles=angles)[0]
-            goa_score = self.grasshopper_optimizer(self.fitness_function, bounds, num_agents=3, max_iter=3, angles=angles)[0]
-            pso_score = self.particle_swarm_optimizer(self.fitness_function, bounds, num_particles=3, max_iter=3, angles=angles)[0]
-            self.last_posture_score = (gwo_score + goa_score + pso_score) / 3
+            gwo = self.grey_wolf_optimizer(self.fitness_function, bounds, angles=angles)[0]
+            goa = self.grasshopper_optimizer(self.fitness_function, bounds, angles=angles)[0]
+            pso = self.particle_swarm_optimizer(self.fitness_function, bounds, angles=angles)[0]
+            self.last_posture_score = (gwo + goa + pso) / 3
         return self.last_posture_score
-
-    def fuse_posture_emotion(self, emotion_probs, posture_score):
-        posture_vec = [0.1] * 7 + [0.0]  # Extend for 'No Emotion'
+    
+    def fuse_posture_emotion(self,emotion_probs, posture_score, face_confidence):
+        # Fixed weights: 40% for face emotion, 60% for posture
+        w_face, w_posture = 0.3, 0.7
+        # Initialize posture vector (8D: 7 emotions + 'No Emotion')
+        posture_vec = [0.1] * 7 + [0.0]  # Default distribution
         if posture_score > 70:
             posture_vec[3], posture_vec[5], posture_vec[6] = 0.6, 0.2, 0.1  # Happy, Surprise, Neutral
         elif posture_score < 30:
             posture_vec[0], posture_vec[4], posture_vec[6] = 0.5, 0.3, 0.1  # Angry, Sad, Neutral
-        w_face, w_posture = 0.7, 0.3  # 70%/30% weighting
-        fused = w_face * np.array(emotion_probs) + w_posture * np.array(posture_vec)
-        return self.emotion_labels[np.argmax(fused)]
-    
-    def predict_emotion(self, video_path, output_path):
 
-        # ---------- Process Video ----------
+        # Fuse emotion probabilities and posture vector
+        fused = w_face * np.array(emotion_probs) + w_posture * np.array(posture_vec)
+        return fused, self.emotion_labels[np.argmax(fused)]
+
+    def predict_emotion(self, video_path, output_path,optimizer="HYBRID"):
+        optimizer_type = optimizer.upper()
+
+        if optimizer_type != "HYBRID":
+            print("❌ Only HYBRID is supported for fusion in this version.")
+            sys.exit()
+
         cap = cv2.VideoCapture(video_path)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1586,9 +1611,10 @@ class Posture(View):
         temp_output = output_path.replace(".mp4", "_temp.mp4")
         out = cv2.VideoWriter(temp_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
-        with self.mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1) as pose, \
-         self.mp_face_detection.FaceDetection(min_detection_confidence=0.5) as face_detection:
-            
+        lstm_sequence_buffer = deque(maxlen=self.LSTM_SEQUENCE_LENGTH)  # Buffer for LSTM sequences
+        sequence_id = 0
+
+        with self.mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1) as pose:
             frame_num = 0
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -1602,48 +1628,69 @@ class Posture(View):
 
                 # Pose detection
                 pose_result = pose.process(img_rgb)
-                back_angle = neck_angle = 0
+                back_angle = neck_angle = shoulder_angle = elbow_angle = 0
                 posture_score = 50
                 face_emotion = "No Emotion"
                 fused_emotion = "No Emotion"
+                pose_vec = [0] * 66  # Default pose vector
 
                 if pose_result.pose_landmarks:
                     lm = pose_result.pose_landmarks.landmark
                     try:
+                        # Back angle: shoulder-hip-knee
                         shoulder = [lm[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * width,
                                     lm[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * height]
                         hip = [lm[self.mp_pose.PoseLandmark.LEFT_HIP.value].x * width,
                             lm[self.mp_pose.PoseLandmark.LEFT_HIP.value].y * height]
                         knee = [lm[self.mp_pose.PoseLandmark.LEFT_KNEE.value].x * width,
                                 lm[self.mp_pose.PoseLandmark.LEFT_KNEE.value].y * height]
+                        back_angle = self.calculate_angle(shoulder, hip, knee)
+
+                        # Neck angle: ear-shoulder-hip
                         ear = [lm[self.mp_pose.PoseLandmark.LEFT_EAR.value].x * width,
                             lm[self.mp_pose.PoseLandmark.LEFT_EAR.value].y * height]
-
-                        back_angle = self.calculate_angle(shoulder, hip, knee)
                         neck_angle = self.calculate_angle(ear, shoulder, hip)
-                        #posture_score = self.optimize_posture_score(back_angle, neck_angle, frame_num)
+
+                        # Shoulder angle: elbow-shoulder-hip
+                        elbow = [lm[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x * width,
+                                lm[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y * height]
+                        shoulder_angle = self.calculate_angle(elbow, shoulder, hip)
+
+                        # Elbow angle: wrist-elbow-shoulder
+                        wrist = [lm[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x * width,
+                                lm[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y * height]
+                        elbow_angle = self.calculate_angle(wrist, elbow, shoulder)
+
+                        angles = [back_angle, neck_angle, shoulder_angle, elbow_angle]
+                        posture_score = self.optimize_posture_score(angles, frame_num)
+
+                        # Extract 66D pose vector
+                        pose_vec = self.extract_pose_vector(lm, width, height)
+                        pose_entry = {"frame": frame_num}
+                        for i, val in enumerate(pose_vec):
+                            pose_entry[f"pose_{i}"] = round(val, 2)
+                        self.pose_vector_log.append(pose_entry)
                     except Exception as e:
                         print(f"Angle calc error: {e}")
-                    landmark_drawing_spec = self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
-                    connection_drawing_spec = self.mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1)
-                    self.mp_drawing.draw_landmarks(frame, pose_result.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
-                                                   landmark_drawing_spec,
-                                                   connection_drawing_spec)
 
-                # Face detection with MediaPipe
-                face_result = face_detection.process(img_rgb)
+                    self.mp_drawing.draw_landmarks(frame, pose_result.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
+
+                # YOLOv10 Face Detection
                 face_img = None
-                if face_result.detections:
-                    detection = face_result.detections[0]  # Use first face
-                    bbox = detection.location_data.relative_bounding_box
-                    x = int(bbox.xmin * width / scale)
-                    y = int(bbox.ymin * height / scale)
-                    w = int(bbox.width * width / scale)
-                    h = int(bbox.height * height / scale)
-                    x, y = max(0, x), max(0, y)
-                    w, h = min(w, width - x), min(h, height - y)
-                    face_img = frame[y:y + h, x:x + w]
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                face_confidence = 0.0  # Default for no detection
+                results = self.yolo_model(resized, conf=0.25, iou=0.7, imgsz=640)
+                for result in results:
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    confidences = result.boxes.conf.cpu().numpy()
+                    if len(boxes) > 0:
+                        x1, y1, x2, y2 = boxes[0]  # First face
+                        face_confidence = confidences[0]
+                        x1, y1, x2, y2 = [int(coord / scale) for coord in [x1, y1, x2, y2]]
+                        x, y = max(0, x1), max(0, y1)
+                        w, h = min(x2 - x1, width - x), min(y2 - y1, height - y)
+                        face_img = frame[y:y + h, x:x + w]
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                        break
 
                 if face_img is not None and face_img.size != 0:
                     try:
@@ -1651,35 +1698,66 @@ class Posture(View):
                         preds = self.emotion_model.predict(face_input, verbose=0)[0]
                         face_emotion = self.emotion_labels[np.argmax(preds)]
                         preds = np.append(preds, 0.0)
-                        fused_emotion = self.fuse_posture_emotion(preds, posture_score)
                     except Exception as e:
                         print(f"Emotion prediction error: {e}")
                         face_emotion = "No Emotion"
-                        fused_emotion = "No Emotion"
+                        preds = [0] * 8
                 else:
                     preds = [0] * 8
 
+                # Fuse and smooth emotions
+                fused_probs, fused_emotion = self.fuse_posture_emotion(preds, posture_score, face_confidence)
+                smoothed_probs = self.smooth_emotion_probs(fused_probs, self.emotion_probs_buffer)
+                smoothed_emotion = self.emotion_labels[np.argmax(smoothed_probs)]
+
+                # Prepare LSTM input sequence
+                sequence_entry = {
+                    "frame": frame_num,
+                    "sequence_id": sequence_id,
+                    **{f"emotion_prob_{i}": round(p, 4) for i, p in enumerate(fused_probs)},
+                    **{f"pose_vec_{i}": round(v, 2) for i, v in enumerate(pose_vec)}
+                }
+                lstm_sequence_buffer.append(sequence_entry)
+                if len(lstm_sequence_buffer) == self.LSTM_SEQUENCE_LENGTH:
+                    for i, entry in enumerate(lstm_sequence_buffer):
+                        self.lstm_input_log.append({
+                            "sequence_id": sequence_id,
+                            "frame": entry["frame"],
+                            "timestep": i,
+                            **{k: v for k, v in entry.items() if k not in ["frame", "sequence_id"]}
+                        })
+                    sequence_id += 1
+
                 self.draw_text(frame, f"Back Angle: {int(back_angle)}", (30, 30))
                 self.draw_text(frame, f"Neck Angle: {int(neck_angle)}", (30, 60))
+                self.draw_text(frame, f"Shoulder Angle: {int(shoulder_angle)}", (30, 90))
+                self.draw_text(frame, f"Elbow Angle: {int(elbow_angle)}", (30, 120))
                 if back_angle < 60 or back_angle > 120:
-                    self.draw_warning(frame, "Bad Back Posture!", (30, 90))
+                    self.draw_warning(frame, "⚠️ Bad Back Posture!", (30, 150))
                 if neck_angle < 40 or neck_angle > 90:
-                    self.draw_warning(frame, "Bad Neck Posture!", (30, 120))
+                    self.draw_warning(frame, "⚠️ Bad Neck Posture!", (30, 180))
 
                 self.draw_text(frame, f"Emotion (Face): {face_emotion}", (width - 280, 30), (255, 255, 255))
                 self.draw_text(frame, f"Fused Emotion: {fused_emotion}", (width - 280, 60), (0, 255, 255))
+                self.draw_text(frame, f"Smoothed Emotion: {smoothed_emotion}", (width - 280, 90), (255, 255, 0))
+                self.draw_text(frame, f"Face Confidence: {face_confidence:.2f}", (width - 280, 120), (255, 255, 0))
 
                 self.log_data.append({
                     "frame": frame_num,
                     "back_angle": back_angle,
                     "neck_angle": neck_angle,
+                    "shoulder_angle": shoulder_angle,
+                    "elbow_angle": elbow_angle,
                     "posture_score": round(posture_score, 2),
                     "face_emotion": face_emotion,
-                    "fused_emotion": fused_emotion
+                    "fused_emotion": fused_emotion,
+                    "smoothed_emotion": smoothed_emotion,
+                    "face_confidence": face_confidence
                 })
 
                 out.write(frame)
                 frame_num += 1
+                
 
         cap.release()
         out.release()
@@ -1700,27 +1778,33 @@ class Posture(View):
         except Exception as e:
             print("❌ Error during video processing:", e)
 
-        # Save CSV log
         df = pd.DataFrame(self.log_data)
         df.to_csv("emotion_posture_log.csv", index=False)
-        print("✅ Saved CSV log: emotion_posture_log.csv")
+        print("✅ Saved emotion and posture log: emotion_posture_log.csv")
 
-        # Compute and print the final fused emotion using majority voting
+        pose_df = pd.DataFrame(self.pose_vector_log)
+        pose_df.to_csv("pose_vector_log.csv", index=False)
+        print("✅ Saved 66D pose vectors to: pose_vector_log.csv")
+
+        lstm_df = pd.DataFrame(self.lstm_input_log)
+        lstm_df.to_csv("lstm_input_log.csv", index=False)
+        print("✅ Saved LSTM input sequences to: lstm_input_log.csv")
+
         if self.log_data:
-            fused_emotions = [entry['fused_emotion'] for entry in self.log_data]
-            final_emotion = Counter(fused_emotions).most_common(1)[0][0]
-            print("✅ Final Fused Emotion (Majority Voting):", final_emotion)
+            smoothed_emotions = [entry['smoothed_emotion'] for entry in self.log_data]
+            final_emotion = Counter(smoothed_emotions).most_common(1)[0][0]
+            print("✅ Final Smoothed Emotion (Majority Voting):", final_emotion)
         else:
-            print("✅ Final Fused Emotion: No Emotion (No frames processed)")
-
+            print("✅ Final Smoothed Emotion: No Emotion (No frames processed)")
+        
         return final_emotion
-
-    
+        
     def post(self, request):
         try:
             video_path = request.session.get("uploaded_video_path")
             if not video_path:
                 return JsonResponse({"error": "No video file found in session"}, status=400)
+            
             video_absolute_path = os.path.join(settings.MEDIA_ROOT, video_path)
             if not os.path.exists(video_absolute_path):
                 return JsonResponse({"error": "Video file not found on server"}, status=404)
@@ -1740,7 +1824,6 @@ class Posture(View):
 
             result = self.predict_emotion(video_absolute_path, output_path)
 
-            #relative_output_path = f"/output/{output_filename}"
 
             return JsonResponse({
                 'result': result,
@@ -1759,7 +1842,6 @@ class Posture(View):
                 "details": str(e),
                 "status": "error"
             }, status=500)
-
 
 class Eye(View):
     def __init__(self):
