@@ -64,6 +64,12 @@ from typing import Tuple, Deque, Dict, Any, Optional, List, Callable, Union
 import logging
 import time
 
+from rich.console import Console
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
+
+# Initialize Rich Console for progress bar and colored text
+console = Console()
+
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from django.utils.text import slugify
@@ -202,6 +208,22 @@ def extract_and_store_audio(video_path, request):
     except Exception as e:
         #print(f"Error extracting audio: {e}")
         return None
+
+def cleanup_old_files(directory, max_age_hours=24):
+    """Remove files older than max_age_hours from the specified directory"""
+    try:
+        current_time = datetime.now()
+        for filename in os.listdir(directory):
+            filepath = os.path.join(directory, filename)
+            file_modified_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+            if (current_time - file_modified_time).total_seconds() > max_age_hours * 3600:
+                try:
+                    os.remove(filepath)
+                    #print(f"Cleaned up old file: {filepath}")
+                except OSError as e:
+                    print(f"Error removing file {filepath}: {e}")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
 
 
 class AudioClassifier(nn.Module):
@@ -344,18 +366,20 @@ class SyncModel(torch.nn.Module):
         x = self.classifier_bn_pool(x).squeeze(-1)
         return torch.sigmoid(self.classifier_fc(x)).squeeze(-1)
 
-# # Ensure face_detector and facemark are loaded (from your original code)
-# face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-# facemark = cv2.face.createFacemarkLBF()
-# try:
-#     facemark_model_path = os.path.join(settings.BASE_DIR, 'models/lbfmodel.yaml')
-#     # Use resource_filename from pkg_resources if you need to load from an installed package
-#     # For local dev, direct path is fine.
-#     facemark.loadModel(facemark_model_path)
-# except Exception as e:
-#     print(f"Warning: Could not load facemark model at {facemark_model_path}. Lip sync check might be affected. Error: {e}")
+# Ensure face_detector and facemark are loaded (from your original code)
+face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+facemark = cv2.face.createFacemarkLBF()
+try:
+    facemark_model_path = os.path.join(settings.BASE_DIR, 'models/lbfmodel.yaml')
+    # Use resource_filename from pkg_resources if you need to load from an installed package
+    # For local dev, direct path is fine.
+    facemark.loadModel(facemark_model_path)
+except Exception as e:
+    print(f"Warning: Could not load facemark model at {facemark_model_path}. Lip sync check might be affected. Error: {e}")
 
 
+
+# -------------------- deepfake detection class --------------------
 class Deepfake(View):
     def __init__(self):
         super().__init__()
@@ -1427,7 +1451,7 @@ class Deepfake(View):
                 "details": str(e),
                 "status": "error"
             }, status=500)
-
+# -------------------- Posture Detection class --------------------
 class Posture(View):
 
     def __init__(self):
@@ -1462,7 +1486,7 @@ class Posture(View):
         self.emotion_model = tf.keras.models.load_model("/home/student/new_api/testpro-main/models/Ar-emotiondetector.h5")
 
         # ---------- Load YOLOv10 Face Detection Model ----------
-        self.yolo_model = YOLO("/home/student/faceof_test/testpro-main/models/yolov10n-face.pt")  # Load pre-trained face model
+        self.yolo_model = YOLO("/home/student/new_api/testpro-main/models/yolov10n-face.pt")  # Load pre-trained face model
 
     def preprocess_face(self,face_img):
         face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
@@ -1733,9 +1757,9 @@ class Posture(View):
                 self.draw_text(frame, f"Shoulder Angle: {int(shoulder_angle)}", (30, 90))
                 self.draw_text(frame, f"Elbow Angle: {int(elbow_angle)}", (30, 120))
                 if back_angle < 60 or back_angle > 120:
-                    self.draw_warning(frame, "⚠️ Bad Back Posture!", (30, 150))
+                    self.draw_warning(frame, "Bad Back Posture!", (30, 150))
                 if neck_angle < 40 or neck_angle > 90:
-                    self.draw_warning(frame, "⚠️ Bad Neck Posture!", (30, 180))
+                    self.draw_warning(frame, "Bad Neck Posture!", (30, 180))
 
                 self.draw_text(frame, f"Emotion (Face): {face_emotion}", (width - 280, 30), (255, 255, 255))
                 self.draw_text(frame, f"Fused Emotion: {fused_emotion}", (width - 280, 60), (0, 255, 255))
@@ -2174,6 +2198,7 @@ class HoneyBeeAlgorithm:
         self.onlooker_bee_phase(emotion_history, confidence_history)
         self.scout_bee_phase()
 
+# ------------------- Facial Emotion Detection class -------------------
 class Face(View):
     def __init__(self):
         super().__init__()
@@ -2826,6 +2851,7 @@ def analyze_video(current_video_path, model, norm_stats, device, selected_featur
             try: os.remove(temp_audio_path)
             except Exception as e_remove: print(f"Warning: Error removing temp audio file {temp_audio_path}: {e_remove}")
 
+# ----------------- audio_tone class -----------------
 class AudioTone(View):
     def __init__(self):
         super().__init__()
@@ -2907,7 +2933,7 @@ class AudioTone(View):
             "overall_emotion": overall_emotion_for_video,
             "explanation": explanation_for_video
         })
-
+# ----------------- HeartRate class -----------------    
 class HeartRate(View):
 
     def __init__(self):
@@ -3139,6 +3165,7 @@ class HeartRate(View):
                 "details": str(e),
                 "status": "error"
             }, status=500)
+# ----------------- HRV class -----------------
 class HRV(View):
     def __init__(self):
         super().__init__()
@@ -3470,8 +3497,7 @@ class HRV(View):
             return reason + "a very high heart rate and extremely low variability are associated with fear."
         else:
             return reason + "the metrics suggest a balanced physiological state."
-
-
+# ----------------- Speech class -----------------
 class Speech(View):
     def __init__(self):
         super().__init__()
@@ -3595,6 +3621,7 @@ class Speech(View):
             return JsonResponse({
                 "sentiment": final_sentiment,
                 "confidence": confidences,
+                "language": lang_code,
             })
 
 
@@ -4669,101 +4696,616 @@ def run_dummy_ml_training_poc(augment_data: bool,
     logging.info(f"Dummy ML PoC training finished. Best Val Acc: {best_val_acc:.1f}%")
     # This model would typically be saved to disk here (e.g., torch.save(model.state_dict(), "path/to/model.pt"))
     return model
+# ------------------ eye_analysis class ------------------
+# class EyeAnalysisView(View):
+
+#     # Configuration for this run (controlled by class attributes, not runtime flags from main block)
+#     APPLY_RULE_TEMPORAL_SMOOTHING = True
+#     RUN_HYBRID_MODEL_LOGIC = True
+#     RUN_PRELIMINARY_VALIDATION = True # This will add latency, for demo purposes
+#     RUN_VIDEO_PROCESSING = True # Enable video processing logic
+
+#     def __init__(self):
+#         super().__init__()
+#         self.detector = None
+#         self.predictor = None
+#         self.ml_model_instance = None
+#         self.ml_model_selected_features = None # Assume pre-selected features if any
+#         self.optimized_rules = None # Assume pre-optimized rules if any
+#         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#         # --- Load Dlib Models ---
+#         shape_predictor_full_path = '/home/student/new_api/testpro-main/models/shape_predictor_68_face_landmarks.dat'
+#         if not os.path.exists(shape_predictor_full_path):
+#             logging.critical(f"Dlib model '{SHAPE_PREDICTOR_FILENAME}' NOT FOUND at: {shape_predictor_full_path}.")
+#             self.dlib_loaded = False
+#         else:
+#             try:
+#                 self.detector = dlib.get_frontal_face_detector()
+#                 self.predictor = dlib.shape_predictor(shape_predictor_full_path)
+#                 self.dlib_loaded = True
+#                 logging.info("Dlib models loaded successfully.")
+#             except Exception as e:
+#                 logging.critical(f"Error loading Dlib models: {e}")
+#                 self.dlib_loaded = False
+
+#         # --- Load Pre-Trained ML Model (or a dummy placeholder) ---
+#         ml_model_weights_path = os.path.join(getattr(settings, 'MODEL_PATH_ROOT', ''), "eye_emotion_lstm_model.pt")
+#         if not os.path.exists(ml_model_weights_path):
+#             logging.warning(f"ML model weights not found at {ml_model_weights_path}. ML inference will be skipped.")
+#             self.ml_model_loaded = False
+#             self.RUN_HYBRID_MODEL_LOGIC = False # Disable hybrid if ML model isn't available
+#         else:
+#             try:
+#                 self.ml_model_instance = EyeEmotionLSTM(
+#                     input_dim=ML_INPUT_DIM, # or load from a config if selected features are used
+#                     hidden_dim=ML_HIDDEN_DIM_LSTM,
+#                     num_layers=ML_NUM_LAYERS_LSTM,
+#                     num_classes=NUM_ML_EMOTION_CLASSES_V2_5,
+#                     dropout_rate=ML_DROPOUT_RATE_MODEL
+#                 ).to(self.device)
+#                 self.ml_model_instance.load_state_dict(torch.load(ml_model_weights_path, map_location=self.device))
+#                 self.ml_model_instance.eval()
+#                 self.ml_model_loaded = True
+#                 logging.info("PyTorch EyeEmotionLSTM model loaded successfully.")
+
+#                 # In a real app, selected_ml_features_final and optimized_ml_hps_final
+#                 # would also be loaded from saved config files here.
+#                 # For this example, if no model is loaded, we implicitly use all features (ML_INPUT_DIM).
+#                 # If a model is loaded, assume it expects ML_INPUT_DIM features, or load selected_features config.
+#                 # self.ml_model_selected_features = [0, 1, 3, 5, 6, 7, 8, 9, 11, 12, 14, 15] # Example if pre-selected
+#                 # self.optimized_ml_hps = {'hidden_dim': 128, 'learning_rate': 0.001} # Example if pre-tuned
+
+#             except Exception as e:
+#                 logging.critical(f"Error loading PyTorch ML model: {e}")
+#                 self.ml_model_loaded = False
+#                 self.ml_model_instance = None
+#                 self.RUN_HYBRID_MODEL_LOGIC = False
+
+#         # --- Load Pre-Optimized Rule Thresholds (or use defaults) ---
+#         # In a real app, this would load from a JSON/YAML file after an offline NIA run.
+#         # For this example, we'll just use DEFAULTs or a hardcoded example if NIA isn't run offline.
+#         # self.optimized_rules = {'EAR_THRESHOLD_BLINK': 0.25, ...} # Example of loaded optimized rules
+#         if not self.optimized_rules: # If not loaded from file, use defaults
+#             self.optimized_rules = {
+#                 'EAR_THRESHOLD_BLINK': DEFAULT_EAR_THRESHOLD_BLINK,
+#                 'EAR_CONSEC_FRAMES_BLINK': DEFAULT_EAR_CONSEC_FRAMES_BLINK,
+#                 'EAR_THRESHOLD_DROWSY': DEFAULT_EAR_THRESHOLD_DROWSY,
+#                 'FIXATION_MAX_MOVEMENT_PX': DEFAULT_FIXATION_MAX_MOVEMENT_PX,
+#                 'T_BLINK_RATE_NERVOUS_HIGH_STATE': DEFAULT_T_BLINK_RATE_NERVOUS_HIGH_STATE,
+#                 'FIXATION_STABILITY_MAX_VARIANCE': DEFAULT_FIXATION_STABILITY_MAX_VARIANCE,
+#                 'T_FIX_STABILITY_GOOD_STATE_FACTOR': DEFAULT_T_FIX_STABILITY_GOOD_STATE_FACTOR,
+#                 'T_SACCADE_AMP_SCANNING_HIGH_STATE': DEFAULT_T_SACCADE_AMP_SCANNING_HIGH_STATE
+#             }
+#         logging.info("Rule-based thresholds loaded (defaults or pre-optimized).")
+
+#     def _process_video_logic(self, input_video_path: str, output_video_path: str,
+#                              detector_instance, predictor_instance, # Dlib instances passed here
+#                              active_rule_thresholds: Optional[Dict[str, Any]],
+#                              ml_model_instance: Optional[EyeEmotionLSTM],
+#                              ml_model_selected_features: Optional[List[int]],
+#                              run_hybrid_logic: bool,
+#                              apply_rule_smoothing: bool,
+#                              rule_smoothing_window: int,
+#                              frame_skip_config: int = FRAME_SKIP,
+#                              max_processing_fps_config: float = MAX_PROCESSING_FPS
+#                              ) -> Dict:
+#         logging.info(f"{SCRIPT_VERSION} Processing: '{os.path.basename(input_video_path)}' -> '{os.path.basename(output_video_path)}'")
+
+#         cap = cv2.VideoCapture(input_video_path)
+#         if not cap.isOpened(): raise RuntimeError(f"Can't open video: {input_video_path}")
+#         o_fps,fw,fh,tot_in_fr = cap.get(cv2.CAP_PROP_FPS),int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#         v_fps = o_fps if o_fps>0 else DEFAULT_PROCESSING_FPS
+#         t_fps = min(v_fps, float(max_processing_fps_config))
+#         a_skip = max(1, int(round(v_fps/t_fps))) if t_fps>0 else max(1, int(frame_skip_config))
+#         eff_fps = (v_fps/a_skip) if a_skip>0 else DEFAULT_PROCESSING_FPS
+#         logging.info(f"Vid: {fw}x{fh}@{o_fps:.1f}FPS ({tot_in_fr}fr). Proc @~{eff_fps:.1f}FPS (Skip:{a_skip})")
+
+#         temp_output_path = output_video_path.replace('.mp4', '_temp.mp4')
+#         try:
+#             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+#             out_w = cv2.VideoWriter(temp_output_path, fourcc, eff_fps, (fw,fh))
+#             if not out_w.isOpened(): raise RuntimeError(f"Can't create writer for {temp_output_path}. Codec: mp4v")
+#         except Exception as e:
+#             cap.release(); raise RuntimeError(f"VideoWriter init error: {e}")
+
+#         feat_ext = EyeFeatureExtractor(fps=eff_fps)
+#         state_mgr = EyeStateManager(fps=eff_fps, initial_thresholds=active_rule_thresholds)
+        
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         if ml_model_instance: ml_model_instance.to(device).eval()
+
+#         fr_idx, p_count, s_t, ll_t = 0,0,time.time(),time.time()
+#         all_features_session: List[Dict[str, Any]] = []
+#         primary_detailed_state_counts: Counter[str] = Counter()
+#         primary_emotion_counts: Counter[str] = Counter()
+
+#         rule_state_hist: Deque[str] = deque(maxlen=max(1, rule_smoothing_window if apply_rule_smoothing else 1))
+#         ml_feature_seq_hist: Deque[np.ndarray] = deque(maxlen=ML_SEQ_LENGTH)
+
+#         while cap.isOpened():
+#             ret,frame=cap.read()
+#             if not ret: break
+#             if fr_idx % a_skip != 0: fr_idx+=1; continue
+#             ts=fr_idx/v_fps if v_fps>0 else p_count/eff_fps
+#             gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+#             faces=detector_instance(gray,0) # Use passed instance
+
+#             current_features: Dict[str,Any] = {}
+#             face_rect_draw: Optional[Tuple[int,int,int,int]] = None
+#             landmarks_draw = None
+
+#             raw_rule_state, rule_confidence = "No Face", 0.95
+#             smoothed_rule_state = raw_rule_state
+
+#             ml_emotion_pred, ml_confidence = "N/A", 0.0
+#             ml_pred_probs_np: Optional[np.ndarray] = None
+
+#             final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
+#             final_state_to_display = smoothed_rule_state
+#             final_confidence_to_display = rule_confidence
+#             final_source = "Rule"
+
+#             raw_rule_info_str: Optional[str] = None
+#             raw_ml_info_str: Optional[str] = None
+
+#             if faces:
+#                 face = faces[0]
+#                 face_rect_draw = (face.left(), face.top(), face.right(), face.bottom())
+#                 landmarks_draw = predictor_instance(gray, face) # Use passed instance
+#                 feat_ext.update(landmarks_draw, face, ts, frame.shape, state_mgr.thresholds)
+#                 current_features = feat_ext.get_features_dict()
+#                 all_features_session.append(current_features.copy())
+
+#                 raw_rule_state, rule_confidence = state_mgr.classify_with_confidence(current_features)
+#                 if apply_rule_smoothing:
+#                     rule_state_hist.append(raw_rule_state)
+#                     smoothed_rule_state = Counter(rule_state_hist).most_common(1)[0][0]
+#                 else:
+#                     smoothed_rule_state = raw_rule_state
+#                 raw_rule_info_str = f"{raw_rule_state[:10]} ({rule_confidence:.2f})"
+#                 if apply_rule_smoothing and raw_rule_state != smoothed_rule_state:
+#                     raw_rule_info_str += f" ->Sm:{smoothed_rule_state[:10]}"
+
+#                 if ml_model_instance:
+#                     numerical_features = feat_ext.get_numerical_feature_vector()
+#                     if ml_model_selected_features:
+#                         if len(numerical_features) >= max(ml_model_selected_features) + 1 :
+#                             numerical_features = numerical_features[ml_model_selected_features]
+#                         else:
+#                             logging.warning("ML feature selection indices out of bounds for current features. Using all features for ML prediction.")
+
+#                     ml_feature_seq_hist.append(numerical_features)
+#                     if len(ml_feature_seq_hist) == ML_SEQ_LENGTH:
+#                         seq_tensor = torch.tensor(np.array(list(ml_feature_seq_hist)), dtype=torch.float32).unsqueeze(0).to(self.device) # use self.device
+#                         with torch.no_grad():
+#                             outputs = ml_model_instance(seq_tensor)
+#                             ml_pred_probs = softmax(outputs.cpu().numpy().flatten())
+#                             ml_pred_probs_np = ml_pred_probs
+#                             top_idx = np.argmax(ml_pred_probs)
+#                             ml_emotion_pred = EMOTION_CLASSES_V2_5[top_idx]
+#                             ml_confidence = ml_pred_probs[top_idx]
+#                         raw_ml_info_str = f"{ml_emotion_pred[:10]} ({ml_confidence:.2f})"
+
+#                 if run_hybrid_logic and ml_model_instance and ml_pred_probs_np is not None:
+#                     final_emotion_to_display, final_confidence_to_display, final_source = hybrid_fusion_strategy(
+#                         smoothed_rule_state, rule_confidence,
+#                         ml_pred_probs_np, lambda idx: EMOTION_CLASSES_V2_5[idx]
+#                     )
+#                     final_state_to_display = final_emotion_to_display
+#                 else:
+#                     final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
+#                     final_state_to_display = smoothed_rule_state
+#                     final_confidence_to_display = rule_confidence
+#                     final_source = "Rule(S)" if apply_rule_smoothing else "Rule"
+#             else: # No face detected
+#                 feat_ext.reset_state()
+#                 current_features = feat_ext.get_features_dict()
+#                 raw_rule_state, rule_confidence = state_mgr.classify_with_confidence(current_features)
+#                 if apply_rule_smoothing:
+#                     rule_state_hist.append(raw_rule_state)
+#                     smoothed_rule_state = Counter(rule_state_hist).most_common(1)[0][0]
+#                 else: smoothed_rule_state = raw_rule_state
+
+#                 final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
+#                 final_state_to_display = smoothed_rule_state
+#                 final_confidence_to_display = rule_confidence
+#                 final_source = "Rule(S)" if apply_rule_smoothing else "Rule"
+#                 ml_feature_seq_hist.clear()
+
+#             primary_detailed_state_counts[final_state_to_display] +=1
+#             primary_emotion_counts[final_emotion_to_display] +=1
+
+#             overall_disp_text = "Analyzing..." if p_count < (eff_fps * 5) else None
+#             draw_diagnostics_on_frame_v2_5(frame, current_features,
+#                                             final_emotion_to_display, final_state_to_display, final_confidence_to_display, final_source,
+#                                             face_rect_draw, landmarks_draw, overall_disp_text,
+#                                             raw_rule_info=raw_rule_info_str, raw_ml_info=raw_ml_info_str)
+#             out_w.write(frame); p_count+=1; fr_idx+=1
+#             if time.time()-ll_t >=10.0:
+#                 el = time.time()-s_t; cur_fps = p_count/el if el>0 else float('inf')
+#                 prog = (p_count / ((tot_in_fr/a_skip) if tot_in_fr>0 and a_skip>0 else p_count or 1)) * 100
+#                 logging.info(f"Proc: {p_count} fr ({prog:.1f}%). FPS: {cur_fps:.1f}. HybridState: {final_state_to_display[:15]}")
+#                 ll_t=time.time()
+
+#         cap.release(); out_w.release(); cv2.destroyAllWindows()
+#         tot_t=time.time()-s_t; logging.info(f"Vid proc fin: {tot_t:.1f}s for {p_count} frames.")
+#         if p_count==0: logging.warning("No frames processed."); return {}
+
+#         try:
+#             ffmpeg_cmd = [
+#                 'ffmpeg', '-y', '-i', temp_output_path, '-c:v', 'libx264', '-preset', 'fast',
+#                 '-movflags', '+faststart', '-pix_fmt', 'yuv420p', output_video_path
+#             ]
+#             subprocess.run(ffmpeg_cmd, check=True)
+#             #os.remove(temp_output_path)  # Remove temp file after successful conversion
+#         except Exception as e:
+#             logging.error(f"FFmpeg conversion failed: {e}", exc_info=True)
+#             try: os.remove(temp_output_path)  # Clean up temp file even if conversion fails
+#             except Exception as clean_e: logging.warning(f"Failed to delete temp output video after FFmpeg error: {clean_e}")
+#             raise RuntimeError(f"FFmpeg conversion failed: {e}")
+        
+
+#         report_content_for_pdf = {}
+#         overall_emo, overall_expl = state_mgr.determine_overall_condition(primary_detailed_state_counts,p_count)
+#         report_content_for_pdf["overall_summary"] = {"emotion": overall_emo, "explanation": overall_expl}
+#         report_content_for_pdf["emotion_distribution"] = primary_emotion_counts
+
+#         avg_f_dict:Dict[str,Any]={};
+#         if all_features_session and all_features_session[0]:
+#             tmp_agg:Dict[str,List] = {f'avg_{k}':[] for k in all_features_session[0] if isinstance(all_features_session[0][k],(int,float))}
+#             for f_dict in all_features_session:
+#                 for k,v in f_dict.items():
+#                     if isinstance(v,(int,float)) and f'avg_{k}' in tmp_agg : tmp_agg[f'avg_{k}'].append(v)
+#             for k,vals in tmp_agg.items(): avg_f_dict[k]=np.mean(vals) if vals else None
+#         report_content_for_pdf["average_features"] = avg_f_dict
+
+#         report_content_for_pdf["processing_summary"] = {
+#             "processed_frames":p_count,"total_input_frames":tot_in_fr if tot_in_fr>0 else "Unk",
+#             "avg_processing_fps":p_count/tot_t if tot_t>0 else 0,
+#             "smoothing_window": f"{rule_smoothing_window} frames" if apply_rule_smoothing else "Disabled"
+#         }
+
+#         print("\n"+"="*70 + f"\n EYE BEHAVIOR ANALYSIS SUMMARY ({SCRIPT_VERSION})\n"+"="*70)
+#         print(f" Input Video: {os.path.basename(input_video_path)}")
+#         print(f" Output Video: {os.path.basename(output_video_path)}")
+#         print(f" Frames Processed: {report_content_for_pdf['processing_summary']['processed_frames']}")
+#         print(f" Overall Emotion (Primary System): {report_content_for_pdf['overall_summary']['emotion']}")
+#         print(f" Explanation: {report_content_for_pdf['overall_summary']['explanation']}\n" + "-"*70)
+#         print(" Top 3 Emotions (Primary System - % of processed frames):")
+#         for i,(emo,ct) in enumerate(report_content_for_pdf.get("emotion_distribution", Counter()).most_common(3)):
+#             print(f"  {i+1}. {emo}: {ct} frames ({(ct/p_count)*100:.1f}%)")
+#         print("="*70 + "\n")
+#         logging.info("--- Processing & Reporting Complete ---")
+
+    
+
+#         return report_content_for_pdf
+
+#     def post(self, request):
+#         logging.info(f"--- Advanced Eye Model {SCRIPT_VERSION} Initiating Analysis from Django View ---")
+
+#         if not self.dlib_loaded:
+#             return JsonResponse({"status": "error", "message": "Dlib models failed to load at server startup. Cannot process video."}, status=500)
+#         if self.RUN_HYBRID_MODEL_LOGIC and not self.ml_model_loaded:
+#             return JsonResponse({"status": "error", "message": "ML model failed to load at server startup, and hybrid logic is enabled. Cannot proceed."}, status=500)
 
 
-# --- Django Class-Based View ---
-class EyeAnalysisView(View):
-    template_name = 'eye_analysis_form.html'
+#         video_path = request.session.get('uploaded_video_path')
+#         if not video_path:
+#             return JsonResponse({"error": "No video file found in session"}, status=400)
 
-    # Configuration for this run (controlled by class attributes, not runtime flags from main block)
-    APPLY_RULE_TEMPORAL_SMOOTHING = True
-    RUN_HYBRID_MODEL_LOGIC = True
-    RUN_PRELIMINARY_VALIDATION = True # This will add latency, for demo purposes
-    RUN_VIDEO_PROCESSING = True # Enable video processing logic
+#         video_absolute_path = os.path.join(settings.MEDIA_ROOT, video_path)
+#         if not os.path.exists(video_absolute_path):
+#             return JsonResponse({"error": "Video file not found on server"}, status=404)
 
-    def __init__(self):
-        super().__init__()
-        self.detector = None
-        self.predictor = None
-        self.ml_model_instance = None
-        self.ml_model_selected_features = None # Assume pre-selected features if any
-        self.optimized_rules = None # Assume pre-optimized rules if any
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         # Get basename and extension for output files
+#         input_file_basename = os.path.splitext(os.path.basename(video_path))[0] 
+#         input_file_ext = os.path.splitext(video_path)[1]
+        
+#         # Setup input path variables
+#         input_vid_full_path = video_absolute_path
+#         input_vid_path_relative = video_path
 
-        # --- Load Dlib Models ---
-        shape_predictor_full_path = '/home/student/new_api/testpro-main/models/shape_predictor_68_face_landmarks.dat'
-        if not os.path.exists(shape_predictor_full_path):
-            logging.critical(f"Dlib model '{SHAPE_PREDICTOR_FILENAME}' NOT FOUND at: {shape_predictor_full_path}.")
-            self.dlib_loaded = False
+#         logging.info(f"Processing video from: {input_vid_full_path}")
+
+#         video_report_data = {}
+#         output_video_full_path = ""
+#         output_pdf_full_path = ""
+
+#         if self.RUN_VIDEO_PROCESSING:
+#             output_vid_suffix_parts = ["analyzed", SCRIPT_VERSION.lower().replace(' ', '_')]
+#             output_vid_suffix_parts.append("rules_opt" if self.optimized_rules else "rules_def") # Use optimized rules if available
+#             if self.APPLY_RULE_TEMPORAL_SMOOTHING: output_vid_suffix_parts.append("smooth")
+#             if self.RUN_HYBRID_MODEL_LOGIC and self.ml_model_loaded: output_vid_suffix_parts.append("hybrid")
+#             else: output_vid_suffix_parts.append("rules_only") # Indicate if ML is off or failed
+
+#             output_video_filename = f"{input_file_basename}_{'_'.join(output_vid_suffix_parts)}{input_file_ext}"
+#             processed_videos_dir = os.path.join(settings.MEDIA_ROOT, 'processed_videos')
+#             os.makedirs(processed_videos_dir, exist_ok=True)
+#             output_video_full_path = os.path.join(processed_videos_dir, output_video_filename)
+
+#             try:
+#                 video_report_data = self._process_video_logic(
+#                     input_video_path=input_vid_full_path,
+#                     output_video_path=output_video_full_path,
+#                     detector_instance=self.detector, # Pass pre-loaded instances
+#                     predictor_instance=self.predictor,
+#                     active_rule_thresholds=self.optimized_rules,
+#                     ml_model_instance=self.ml_model_instance if self.RUN_HYBRID_MODEL_LOGIC else None,
+#                     ml_model_selected_features=self.ml_model_selected_features if self.RUN_HYBRID_MODEL_LOGIC else None,
+#                     run_hybrid_logic=self.RUN_HYBRID_MODEL_LOGIC,
+#                     apply_rule_smoothing=self.APPLY_RULE_TEMPORAL_SMOOTHING,
+#                     rule_smoothing_window=RULE_BASED_SMOOTHING_WINDOW_SIZE
+#                 )
+
+#                 overall_emotion = video_report_data.get("overall_summary", {}).get("emotion", "N/A")
+#             except Exception as e:
+                
+#                 return JsonResponse({"status": "error", "message": f"Video processing failed: {e}"}, status=500)
+#         else:
+#             logging.info("Video processing was skipped based on configuration.")
+#             video_report_data["processing_summary"] = {"processed_frames": 0, "total_input_frames": "N/A", "avg_processing_fps": 0}
+#             video_report_data["overall_summary"] = {"emotion": "N/A", "explanation": "Video processing not run."}
+#             video_report_data["emotion_distribution"] = Counter()
+#             video_report_data["average_features"] = {}
+
+#         if self.RUN_PRELIMINARY_VALIDATION:
+#             logging.info(f"--- {SCRIPT_VERSION}: Running Preliminary Validations ---")
+#             dummy_test_data_rb: List[Dict[str, Any]] = []
+#             for i in range(ML_DUMMY_NUM_TEST_SAMPLES):
+#                 gt_emo = random.choice(EMOTION_CLASSES_V2_5)
+#                 dummy_feats = {'avg_ear': random.uniform(0.1,0.4), 'blink_rate_bpm': random.uniform(3,35),
+#                                'current_fixation_frames': float(random.randint(0, int(DEFAULT_PROCESSING_FPS*2))),
+#                                'fixation_stability': random.uniform(5,100) if random.random() > 0.1 else -1.0,
+#                                'avg_saccade_amplitude': random.uniform(1,30),
+#                                'inter_ocular_dist_face_ratio': random.uniform(0.1,0.2),
+#                                'pupil_proxy_derivative1': random.uniform(-0.05, 0.05) * DEFAULT_PROCESSING_FPS,
+#                                'head_roll': random.uniform(-15,15), 'head_yaw': random.uniform(-15,15),
+#                                'is_blinking_now':0.0, 'is_drowsy_closure':0.0}
+#                 dummy_test_data_rb.append({"id": f"rb_test_{i}", "features": dummy_feats, "ground_truth_emotion": gt_emo})
+
+#             temp_state_mgr_for_val = EyeStateManager(fps=DEFAULT_PROCESSING_FPS, initial_thresholds=self.optimized_rules)
+#             rb_val_results = validate_rule_based_system(temp_state_mgr_for_val, dummy_test_data_rb, "Dummy Test Set RB")
+#             video_report_data["validation_report_rule_based"] = rb_val_results
+
+#             if self.ml_model_loaded:
+#                 ml_test_seqs, ml_test_labels, _ = generate_dummy_ml_data(ML_DUMMY_NUM_TEST_SAMPLES, ML_SEQ_LENGTH, ML_INPUT_DIM, NUM_ML_EMOTION_CLASSES_V2_5, is_test_set=True)
+#                 input_dim_for_ml_val = ML_INPUT_DIM
+#                 if self.ml_model_selected_features:
+#                     ml_test_seqs_sel = [s[:, self.ml_model_selected_features] for s in ml_test_seqs if s.ndim==2 and s.shape[1]>=len(self.ml_model_selected_features)]
+#                     if ml_test_seqs_sel: ml_test_seqs = ml_test_seqs_sel
+#                     input_dim_for_ml_val = len(self.ml_model_selected_features)
+
+#                 if input_dim_for_ml_val > 0:
+#                     ml_val_results = validate_ml_model(self.ml_model_instance, ml_test_seqs, ml_test_labels,
+#                                                        "Dummy Test Set ML", self.device,
+#                                                        input_dim_for_model=input_dim_for_ml_val)
+#                     video_report_data["validation_report_ml"] = ml_val_results
+#                 else:
+#                     video_report_data["validation_report_ml"] = {"source": "Dummy Test Set ML", "num_samples": 0, "report_str": "ML validation skipped due to 0 input features."}
+#             else:
+#                 logging.info("ML model not available for validation.")
+#                 video_report_data["validation_report_ml"] = {"source": "Dummy Test Set ML", "num_samples": 0, "report_str": "ML model not trained/loaded."}
+
+#         pdf_report_name_base = os.path.splitext(os.path.basename(input_vid_full_path))[0]
+#         reports_dir = os.path.join(settings.MEDIA_ROOT, 'reports')
+#         os.makedirs(reports_dir, exist_ok=True)
+#         final_pdf_output_path = os.path.join(reports_dir, f"{slugify(pdf_report_name_base)}{PDF_REPORT_FILENAME_SUFFIX}")
+
+#         try:
+#           generate_pdf_report_reportlab_v2_5(final_pdf_output_path, os.path.basename(input_vid_full_path), video_report_data)
+#           output_pdf_full_path = final_pdf_output_path
+#         except Exception as e:
+#             logging.error(f"PDF report generation failed: {e}", exc_info=True)
+#             try: default_storage.delete(input_vid_path_relative)
+#             except Exception as clean_e: logging.warning(f"Failed to delete temp input video after PDF error: {clean_e}")
+#             return JsonResponse({"status": "error", "message": f"PDF report generation failed: {e}"}, status=500)
+
+        
+
+#         result_data = {
+#             "status": "success",
+#             "message": "Eye analysis complete.",
+#             "output_video_url": settings.MEDIA_URL + os.path.relpath(output_video_full_path, settings.MEDIA_ROOT) if self.RUN_VIDEO_PROCESSING and output_video_full_path else None,
+#             "pdf_report_url": settings.MEDIA_URL + os.path.relpath(output_pdf_full_path, settings.MEDIA_ROOT) if output_pdf_full_path else None,
+#             "overall_summary": video_report_data.get("overall_summary"),
+#             "emotion_distribution": dict(video_report_data.get("emotion_distribution", Counter())),
+#             "processing_summary": video_report_data.get("processing_summary"),
+#             "final_emotion": overall_emotion
+#         }
+#         return JsonResponse(result_data)
+
+# ------------------ eye_analysis v2 class ------------------
+class  EyeAnalysisViewV2(View):
+    def __init__(self, calibration_seconds=5, cool_down_period=2.0):
+        # This class also remains unchanged.
+        self.calibration_seconds = calibration_seconds
+        self.cool_down_period = cool_down_period
+        self.is_calibrated = False
+        self.baseline_state = "Unknown"
+        self.previous_metrics = {}
+        self.current_emotion = "Calibrating"
+        self.current_confidence = 0
+        self.emotion_cool_down_until = 0
+        self._calibration_data = []
+        self.dat_file_path = "/home/student/faceof_test/testpro-main/models/shape_predictor_68_face_landmarks.dat"
+        self.predictor = dlib.shape_predictor(self.dat_file_path)
+
+    def encode_video(self,input_path, output_path):
+        try:
+            command = [
+                'ffmpeg', '-i', input_path,
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-strict', '-2',
+                '-movflags', '+faststart',
+                '-y',
+                output_path
+            ]
+
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            if process.returncode != 0:
+                print(f"FFmpeg encoding failed: {process.stderr.decode()}")
+                return None
+
+            return output_path
+
+        except Exception as e:
+            print(f"Error during video encoding: {e}")
+            return None
+        
+
+    def _finalize_calibration(self):
+        if self._calibration_data:
+            self.baseline_state = Counter(state['eye_state'] for state in self._calibration_data).most_common(1)[0][0]
         else:
-            try:
-                self.detector = dlib.get_frontal_face_detector()
-                self.predictor = dlib.shape_predictor(shape_predictor_full_path)
-                self.dlib_loaded = True
-                logging.info("Dlib models loaded successfully.")
-            except Exception as e:
-                logging.critical(f"Error loading Dlib models: {e}")
-                self.dlib_loaded = False
+            self.baseline_state = "Natural"
+        self.is_calibrated = True
+        self.current_emotion = "Calm"
+        print(f"-> Calibration complete. Baseline eye state established as: {self.baseline_state}")
 
-        # --- Load Pre-Trained ML Model (or a dummy placeholder) ---
-        ml_model_weights_path = os.path.join(getattr(settings, 'MODEL_PATH_ROOT', ''), "eye_emotion_lstm_model.pt")
-        if not os.path.exists(ml_model_weights_path):
-            logging.warning(f"ML model weights not found at {ml_model_weights_path}. ML inference will be skipped.")
-            self.ml_model_loaded = False
-            self.RUN_HYBRID_MODEL_LOGIC = False # Disable hybrid if ML model isn't available
+    def _calculate_confidence(self, metrics, head_stability):
+        confidence = 65
+        if head_stability == 'Stable': confidence += 15
+        if metrics['gaze_direction'] == 'Center': confidence += 10
+        if metrics['eye_state'] in ['Intense', 'Nervous']: confidence += 5
+        return min(confidence, 99)
+    
+    def update(self, metrics, head_stability, frame_time):
+        if not metrics:
+            return self.current_emotion, self.current_confidence
+        if not self.is_calibrated:
+            self._calibration_data.append(metrics)
+            if frame_time >= self.calibration_seconds:
+                self._finalize_calibration()
+            return "Calibrating...", 0
+        if frame_time < self.emotion_cool_down_until:
+            return self.current_emotion, self.current_confidence
+        new_emotion = self.current_emotion
+        prev_state = self.previous_metrics.get('eye_state', self.baseline_state)
+        if metrics['eye_state'] != prev_state:
+            if metrics['eye_state'] == "Nervous" and new_emotion != "Agitated": new_emotion = "Agitated"
+            elif metrics['eye_state'] in ["Focused", "Intense"] and prev_state in ["Natural", "Distracted"]: new_emotion = "Engaged"
+            elif metrics['eye_state'] in ["Natural", "Distracted"] and prev_state in ["Focused", "Intense"]: new_emotion = "Disengaged"
+            elif metrics['eye_state'] == self.baseline_state and new_emotion != "Calm": new_emotion = "Calm"
+        if new_emotion != self.current_emotion:
+            self.current_emotion = new_emotion
+            self.current_confidence = self._calculate_confidence(metrics, head_stability)
+            self.emotion_cool_down_until = frame_time + self.cool_down_period
+        self.previous_metrics = metrics
+        return self.current_emotion, self.current_confidence
+
+    def analyze_facial_metrics(self,landmarks, frame, previous_eye_center, fixation_duration):
+        # This function remains the same as it's the core of the analysis.
+        left_eye = np.array([(landmarks.part(n).x, landmarks.part(n).y) for n in range(36, 42)])
+        right_eye = np.array([(landmarks.part(n).x, landmarks.part(n).y) for n in range(42, 48)])
+        interpupillary_distance = np.linalg.norm(left_eye.mean(axis=0) - right_eye.mean(axis=0))
+        face_width = np.linalg.norm(np.array([landmarks.part(0).x, landmarks.part(0).y]) - np.array([landmarks.part(16).x, landmarks.part(16).y]))
+        ipd_ratio = interpupillary_distance / face_width if face_width > 0 else 0.4
+        current_eye_center = (left_eye.mean(axis=0) + right_eye.mean(axis=0)) / 2
+        if previous_eye_center is not None:
+            movement = np.linalg.norm(current_eye_center - previous_eye_center)
+            fixation_duration = fixation_duration + 1 if movement < 5 else 0
         else:
-            try:
-                self.ml_model_instance = EyeEmotionLSTM(
-                    input_dim=ML_INPUT_DIM, # or load from a config if selected features are used
-                    hidden_dim=ML_HIDDEN_DIM_LSTM,
-                    num_layers=ML_NUM_LAYERS_LSTM,
-                    num_classes=NUM_ML_EMOTION_CLASSES_V2_5,
-                    dropout_rate=ML_DROPOUT_RATE_MODEL
-                ).to(self.device)
-                self.ml_model_instance.load_state_dict(torch.load(ml_model_weights_path, map_location=self.device))
-                self.ml_model_instance.eval()
-                self.ml_model_loaded = True
-                logging.info("PyTorch EyeEmotionLSTM model loaded successfully.")
+            fixation_duration = 0
+        previous_eye_center = current_eye_center
+        if ipd_ratio > 0.42 and fixation_duration > 20: eye_state = "Intense"
+        elif ipd_ratio > 0.42 and fixation_duration < 10: eye_state = "Focused"
+        elif ipd_ratio < 0.38 and fixation_duration > 20: eye_state = "Nervous"
+        elif ipd_ratio < 0.38 and fixation_duration < 10: eye_state = "Distracted"
+        else: eye_state = "Natural"
+        nose_tip = (landmarks.part(30).x, landmarks.part(30).y)
+        face_center_x = (landmarks.part(16).x + landmarks.part(0).x) / 2
+        gaze_ratio = (nose_tip[0] - face_center_x) / face_width if face_width > 0 else 0
+        if gaze_ratio < -0.05: gaze_direction = "Right"
+        elif gaze_ratio > 0.05: gaze_direction = "Left"
+        else: gaze_direction = "Center"
+        for i in range(36, 48):
+            p = landmarks.part(i)
+            cv2.circle(frame, (p.x, p.y), 1, (0, 255, 0), -1)
+        return {
+            "eye_state": eye_state, "ipd_ratio": ipd_ratio,
+            "gaze_direction": gaze_direction, "fixation_duration": fixation_duration
+        }, previous_eye_center
 
-                # In a real app, selected_ml_features_final and optimized_ml_hps_final
-                # would also be loaded from saved config files here.
-                # For this example, if no model is loaded, we implicitly use all features (ML_INPUT_DIM).
-                # If a model is loaded, assume it expects ML_INPUT_DIM features, or load selected_features config.
-                # self.ml_model_selected_features = [0, 1, 3, 5, 6, 7, 8, 9, 11, 12, 14, 15] # Example if pre-selected
-                # self.optimized_ml_hps = {'hidden_dim': 128, 'learning_rate': 0.001} # Example if pre-tuned
+    def process_video(self,input_video, output_video, mtcnn, predictor):
+        cap = cv2.VideoCapture(input_video)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
-            except Exception as e:
-                logging.critical(f"Error loading PyTorch ML model: {e}")
-                self.ml_model_loaded = False
-                self.ml_model_instance = None
-                self.RUN_HYBRID_MODEL_LOGIC = False
+        previous_eye_center, fixation_duration, previous_face_box_center = None, 0, None
+        emotion_counts, eye_state_counts = Counter(), Counter()
+        
+        start_time = time.time()
+        
+        with Progress(
+            TextColumn("[blue]Processing:"), BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(), console=console
+        ) as progress:
+            task = progress.add_task("Frames", total=total_frames)
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: break
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                boxes, _ = mtcnn.detect(frame_rgb)
+                facial_metrics, head_stability = {}, "Unknown"
 
-        # --- Load Pre-Optimized Rule Thresholds (or use defaults) ---
-        # In a real app, this would load from a JSON/YAML file after an offline NIA run.
-        # For this example, we'll just use DEFAULTs or a hardcoded example if NIA isn't run offline.
-        # self.optimized_rules = {'EAR_THRESHOLD_BLINK': 0.25, ...} # Example of loaded optimized rules
-        if not self.optimized_rules: # If not loaded from file, use defaults
-            self.optimized_rules = {
-                'EAR_THRESHOLD_BLINK': DEFAULT_EAR_THRESHOLD_BLINK,
-                'EAR_CONSEC_FRAMES_BLINK': DEFAULT_EAR_CONSEC_FRAMES_BLINK,
-                'EAR_THRESHOLD_DROWSY': DEFAULT_EAR_THRESHOLD_DROWSY,
-                'FIXATION_MAX_MOVEMENT_PX': DEFAULT_FIXATION_MAX_MOVEMENT_PX,
-                'T_BLINK_RATE_NERVOUS_HIGH_STATE': DEFAULT_T_BLINK_RATE_NERVOUS_HIGH_STATE,
-                'FIXATION_STABILITY_MAX_VARIANCE': DEFAULT_FIXATION_STABILITY_MAX_VARIANCE,
-                'T_FIX_STABILITY_GOOD_STATE_FACTOR': DEFAULT_T_FIX_STABILITY_GOOD_STATE_FACTOR,
-                'T_SACCADE_AMP_SCANNING_HIGH_STATE': DEFAULT_T_SACCADE_AMP_SCANNING_HIGH_STATE
-            }
-        logging.info("Rule-based thresholds loaded (defaults or pre-optimized).")
+                if boxes is not None:
+                    box = boxes[0]
+                    x1, y1, x2, y2 = [int(b) for b in box]
+                    current_face_box_center = np.array([(x1 + x2) / 2, (y1 + y2) / 2])
+                    if previous_face_box_center is not None:
+                        head_movement = np.linalg.norm(current_face_box_center - previous_face_box_center)
+                        head_stability = "Stable" if head_movement < 10 else "Unstable"
+                    else: head_stability = "Stable"
+                    previous_face_box_center = current_face_box_center
+                    landmarks = predictor(frame_rgb, dlib.rectangle(x1, y1, x2, y2))
+                    facial_metrics, previous_eye_center = self.analyze_facial_metrics(
+                        landmarks, frame, previous_eye_center, fixation_duration)
+                    fixation_duration = facial_metrics['fixation_duration']
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 1)
+                
+                video_time = time.time() - start_time
+                probable_emotion, confidence = self.update(facial_metrics, head_stability, video_time)
+                
+                if self.is_calibrated and facial_metrics:
+                    emotion_counts[probable_emotion] += 1
+                    eye_state_counts[facial_metrics['eye_state']] += 1
 
+                font_scale, font_thickness = 0.5, 1
+                cv2.putText(frame, f"Emotion: {probable_emotion} (Conf: {confidence:.0f}%)", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, font_scale + 0.1, (0, 0, 255), font_thickness + 1)
+                
+                out.write(frame)
+                progress.update(task, advance=1)
+        
+        cap.release(), out.release()
+        
+        overall_emotion = emotion_counts.most_common(1)[0][0] if emotion_counts else "Not Determined"
+        overall_eye_state = eye_state_counts.most_common(1)[0][0] if eye_state_counts else "Not Determined"
+
+        return {
+            "overall_emotion": overall_emotion,
+            "overall_eye_state": overall_eye_state,
+            "baseline_state": self.baseline_state
+        }
 
     def post(self, request):
-        logging.info(f"--- Advanced Eye Model {SCRIPT_VERSION} Initiating Analysis from Django View ---")
+        logging.info(f"--- Eye Analysis V2 Initiating Analysis from Django View ---")
 
-        if not self.dlib_loaded:
+        if not self.dat_file_path:
             return JsonResponse({"status": "error", "message": "Dlib models failed to load at server startup. Cannot process video."}, status=500)
-        if self.RUN_HYBRID_MODEL_LOGIC and not self.ml_model_loaded:
-            return JsonResponse({"status": "error", "message": "ML model failed to load at server startup, and hybrid logic is enabled. Cannot proceed."}, status=500)
-
 
         video_path = request.session.get('uploaded_video_path')
         if not video_path:
@@ -4773,329 +5315,52 @@ class EyeAnalysisView(View):
         if not os.path.exists(video_absolute_path):
             return JsonResponse({"error": "Video file not found on server"}, status=404)
 
-        # Get basename and extension for output files
-        input_file_basename = os.path.splitext(os.path.basename(video_path))[0] 
-        input_file_ext = os.path.splitext(video_path)[1]
+        video_uuid = request.session.get('video_uuid')
+        if not video_uuid:
+            return JsonResponse({"error": "No video UUID found in session"}, status=400)
         
-        # Setup input path variables
         input_vid_full_path = video_absolute_path
-        input_vid_path_relative = video_path
 
         logging.info(f"Processing video from: {input_vid_full_path}")
 
-        video_report_data = {}
-        output_video_full_path = ""
-        output_pdf_full_path = ""
+        output_temp = "eye_temp.mp4"
 
-        if self.RUN_VIDEO_PROCESSING:
-            output_vid_suffix_parts = ["analyzed", SCRIPT_VERSION.lower().replace(' ', '_')]
-            output_vid_suffix_parts.append("rules_opt" if self.optimized_rules else "rules_def") # Use optimized rules if available
-            if self.APPLY_RULE_TEMPORAL_SMOOTHING: output_vid_suffix_parts.append("smooth")
-            if self.RUN_HYBRID_MODEL_LOGIC and self.ml_model_loaded: output_vid_suffix_parts.append("hybrid")
-            else: output_vid_suffix_parts.append("rules_only") # Indicate if ML is off or failed
+        output_dir = os.path.join(settings.MEDIA_ROOT, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, output_temp)
 
-            output_video_filename = f"{input_file_basename}_{'_'.join(output_vid_suffix_parts)}{input_file_ext}"
-            processed_videos_dir = os.path.join(settings.MEDIA_ROOT, 'processed_videos')
-            os.makedirs(processed_videos_dir, exist_ok=True)
-            output_video_full_path = os.path.join(processed_videos_dir, output_video_filename)
 
-            try:
-                video_report_data = self._process_video_logic(
-                    input_video_path=input_vid_full_path,
-                    output_video_path=output_video_full_path,
-                    detector_instance=self.detector, # Pass pre-loaded instances
-                    predictor_instance=self.predictor,
-                    active_rule_thresholds=self.optimized_rules,
-                    ml_model_instance=self.ml_model_instance if self.RUN_HYBRID_MODEL_LOGIC else None,
-                    ml_model_selected_features=self.ml_model_selected_features if self.RUN_HYBRID_MODEL_LOGIC else None,
-                    run_hybrid_logic=self.RUN_HYBRID_MODEL_LOGIC,
-                    apply_rule_smoothing=self.APPLY_RULE_TEMPORAL_SMOOTHING,
-                    rule_smoothing_window=RULE_BASED_SMOOTHING_WINDOW_SIZE
-                )
-
-                overall_emotion = video_report_data.get("overall_summary", {}).get("emotion", "N/A")
-            except Exception as e:
-                
-                return JsonResponse({"status": "error", "message": f"Video processing failed: {e}"}, status=500)
-        else:
-            logging.info("Video processing was skipped based on configuration.")
-            video_report_data["processing_summary"] = {"processed_frames": 0, "total_input_frames": "N/A", "avg_processing_fps": 0}
-            video_report_data["overall_summary"] = {"emotion": "N/A", "explanation": "Video processing not run."}
-            video_report_data["emotion_distribution"] = Counter()
-            video_report_data["average_features"] = {}
-
-        if self.RUN_PRELIMINARY_VALIDATION:
-            logging.info(f"--- {SCRIPT_VERSION}: Running Preliminary Validations ---")
-            dummy_test_data_rb: List[Dict[str, Any]] = []
-            for i in range(ML_DUMMY_NUM_TEST_SAMPLES):
-                gt_emo = random.choice(EMOTION_CLASSES_V2_5)
-                dummy_feats = {'avg_ear': random.uniform(0.1,0.4), 'blink_rate_bpm': random.uniform(3,35),
-                               'current_fixation_frames': float(random.randint(0, int(DEFAULT_PROCESSING_FPS*2))),
-                               'fixation_stability': random.uniform(5,100) if random.random() > 0.1 else -1.0,
-                               'avg_saccade_amplitude': random.uniform(1,30),
-                               'inter_ocular_dist_face_ratio': random.uniform(0.1,0.2),
-                               'pupil_proxy_derivative1': random.uniform(-0.05, 0.05) * DEFAULT_PROCESSING_FPS,
-                               'head_roll': random.uniform(-15,15), 'head_yaw': random.uniform(-15,15),
-                               'is_blinking_now':0.0, 'is_drowsy_closure':0.0}
-                dummy_test_data_rb.append({"id": f"rb_test_{i}", "features": dummy_feats, "ground_truth_emotion": gt_emo})
-
-            temp_state_mgr_for_val = EyeStateManager(fps=DEFAULT_PROCESSING_FPS, initial_thresholds=self.optimized_rules)
-            rb_val_results = validate_rule_based_system(temp_state_mgr_for_val, dummy_test_data_rb, "Dummy Test Set RB")
-            video_report_data["validation_report_rule_based"] = rb_val_results
-
-            if self.ml_model_loaded:
-                ml_test_seqs, ml_test_labels, _ = generate_dummy_ml_data(ML_DUMMY_NUM_TEST_SAMPLES, ML_SEQ_LENGTH, ML_INPUT_DIM, NUM_ML_EMOTION_CLASSES_V2_5, is_test_set=True)
-                input_dim_for_ml_val = ML_INPUT_DIM
-                if self.ml_model_selected_features:
-                    ml_test_seqs_sel = [s[:, self.ml_model_selected_features] for s in ml_test_seqs if s.ndim==2 and s.shape[1]>=len(self.ml_model_selected_features)]
-                    if ml_test_seqs_sel: ml_test_seqs = ml_test_seqs_sel
-                    input_dim_for_ml_val = len(self.ml_model_selected_features)
-
-                if input_dim_for_ml_val > 0:
-                    ml_val_results = validate_ml_model(self.ml_model_instance, ml_test_seqs, ml_test_labels,
-                                                       "Dummy Test Set ML", self.device,
-                                                       input_dim_for_model=input_dim_for_ml_val)
-                    video_report_data["validation_report_ml"] = ml_val_results
-                else:
-                    video_report_data["validation_report_ml"] = {"source": "Dummy Test Set ML", "num_samples": 0, "report_str": "ML validation skipped due to 0 input features."}
-            else:
-                logging.info("ML model not available for validation.")
-                video_report_data["validation_report_ml"] = {"source": "Dummy Test Set ML", "num_samples": 0, "report_str": "ML model not trained/loaded."}
-
-        pdf_report_name_base = os.path.splitext(os.path.basename(input_vid_full_path))[0]
-        reports_dir = os.path.join(settings.MEDIA_ROOT, 'reports')
-        os.makedirs(reports_dir, exist_ok=True)
-        final_pdf_output_path = os.path.join(reports_dir, f"{slugify(pdf_report_name_base)}{PDF_REPORT_FILENAME_SUFFIX}")
-
+        output_video_full_path = output_path
         try:
-          generate_pdf_report_reportlab_v2_5(final_pdf_output_path, os.path.basename(input_vid_full_path), video_report_data)
-          output_pdf_full_path = final_pdf_output_path
+            report_data = self.process_video(
+                input_video=input_vid_full_path,
+                output_video=output_video_full_path,
+                mtcnn = MTCNN(keep_all=False, device=device),
+                predictor=self.predictor
+            )
+            overall_emotion = report_data.get("overall_emotion", "N/A")
         except Exception as e:
-            logging.error(f"PDF report generation failed: {e}", exc_info=True)
-            try: default_storage.delete(input_vid_path_relative)
-            except Exception as clean_e: logging.warning(f"Failed to delete temp input video after PDF error: {clean_e}")
-            return JsonResponse({"status": "error", "message": f"PDF report generation failed: {e}"}, status=500)
+            return JsonResponse({"status": "error", "message": f"Video processing failed: {e}"}, status=500)
 
-        
+        output_filename = f"eye_analysis_video_{video_uuid}.mp4"
+        output_dir = os.path.join(settings.MEDIA_ROOT, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+
+        output_final_path = os.path.join(output_dir, output_filename)
+
+        self.encode_video(output_video_full_path,output_final_path)
 
         result_data = {
             "status": "success",
             "message": "Eye analysis complete.",
-            "output_video_url": settings.MEDIA_URL + os.path.relpath(output_video_full_path, settings.MEDIA_ROOT) if self.RUN_VIDEO_PROCESSING and output_video_full_path else None,
-            "pdf_report_url": settings.MEDIA_URL + os.path.relpath(output_pdf_full_path, settings.MEDIA_ROOT) if output_pdf_full_path else None,
-            "overall_summary": video_report_data.get("overall_summary"),
-            "emotion_distribution": dict(video_report_data.get("emotion_distribution", Counter())),
-            "processing_summary": video_report_data.get("processing_summary"),
-            "final_emotion": overall_emotion
+            "output_video_url": settings.MEDIA_URL + os.path.relpath(output_final_path, settings.MEDIA_ROOT) if output_final_path else None,
+            "overall_emotion": overall_emotion,
+            "overall_eye_state": report_data.get("overall_eye_state", "N/A"),
+            "baseline_state": report_data.get("baseline_state", "N/A")
         }
         return JsonResponse(result_data)
 
-
-    def _process_video_logic(self, input_video_path: str, output_video_path: str,
-                             detector_instance, predictor_instance, # Dlib instances passed here
-                             active_rule_thresholds: Optional[Dict[str, Any]],
-                             ml_model_instance: Optional[EyeEmotionLSTM],
-                             ml_model_selected_features: Optional[List[int]],
-                             run_hybrid_logic: bool,
-                             apply_rule_smoothing: bool,
-                             rule_smoothing_window: int,
-                             frame_skip_config: int = FRAME_SKIP,
-                             max_processing_fps_config: float = MAX_PROCESSING_FPS
-                             ) -> Dict:
-        logging.info(f"{SCRIPT_VERSION} Processing: '{os.path.basename(input_video_path)}' -> '{os.path.basename(output_video_path)}'")
-
-        cap = cv2.VideoCapture(input_video_path)
-        if not cap.isOpened(): raise RuntimeError(f"Can't open video: {input_video_path}")
-        o_fps,fw,fh,tot_in_fr = cap.get(cv2.CAP_PROP_FPS),int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        v_fps = o_fps if o_fps>0 else DEFAULT_PROCESSING_FPS
-        t_fps = min(v_fps, float(max_processing_fps_config))
-        a_skip = max(1, int(round(v_fps/t_fps))) if t_fps>0 else max(1, int(frame_skip_config))
-        eff_fps = (v_fps/a_skip) if a_skip>0 else DEFAULT_PROCESSING_FPS
-        logging.info(f"Vid: {fw}x{fh}@{o_fps:.1f}FPS ({tot_in_fr}fr). Proc @~{eff_fps:.1f}FPS (Skip:{a_skip})")
-
-        temp_output_path = output_video_path.replace('.mp4', '_temp.mp4')
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out_w = cv2.VideoWriter(temp_output_path, fourcc, eff_fps, (fw,fh))
-            if not out_w.isOpened(): raise RuntimeError(f"Can't create writer for {temp_output_path}. Codec: mp4v")
-        except Exception as e:
-            cap.release(); raise RuntimeError(f"VideoWriter init error: {e}")
-
-        feat_ext = EyeFeatureExtractor(fps=eff_fps)
-        state_mgr = EyeStateManager(fps=eff_fps, initial_thresholds=active_rule_thresholds)
-        
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if ml_model_instance: ml_model_instance.to(device).eval()
-
-        fr_idx, p_count, s_t, ll_t = 0,0,time.time(),time.time()
-        all_features_session: List[Dict[str, Any]] = []
-        primary_detailed_state_counts: Counter[str] = Counter()
-        primary_emotion_counts: Counter[str] = Counter()
-
-        rule_state_hist: Deque[str] = deque(maxlen=max(1, rule_smoothing_window if apply_rule_smoothing else 1))
-        ml_feature_seq_hist: Deque[np.ndarray] = deque(maxlen=ML_SEQ_LENGTH)
-
-        while cap.isOpened():
-            ret,frame=cap.read()
-            if not ret: break
-            if fr_idx % a_skip != 0: fr_idx+=1; continue
-            ts=fr_idx/v_fps if v_fps>0 else p_count/eff_fps
-            gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-            faces=detector_instance(gray,0) # Use passed instance
-
-            current_features: Dict[str,Any] = {}
-            face_rect_draw: Optional[Tuple[int,int,int,int]] = None
-            landmarks_draw = None
-
-            raw_rule_state, rule_confidence = "No Face", 0.95
-            smoothed_rule_state = raw_rule_state
-
-            ml_emotion_pred, ml_confidence = "N/A", 0.0
-            ml_pred_probs_np: Optional[np.ndarray] = None
-
-            final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
-            final_state_to_display = smoothed_rule_state
-            final_confidence_to_display = rule_confidence
-            final_source = "Rule"
-
-            raw_rule_info_str: Optional[str] = None
-            raw_ml_info_str: Optional[str] = None
-
-            if faces:
-                face = faces[0]
-                face_rect_draw = (face.left(), face.top(), face.right(), face.bottom())
-                landmarks_draw = predictor_instance(gray, face) # Use passed instance
-                feat_ext.update(landmarks_draw, face, ts, frame.shape, state_mgr.thresholds)
-                current_features = feat_ext.get_features_dict()
-                all_features_session.append(current_features.copy())
-
-                raw_rule_state, rule_confidence = state_mgr.classify_with_confidence(current_features)
-                if apply_rule_smoothing:
-                    rule_state_hist.append(raw_rule_state)
-                    smoothed_rule_state = Counter(rule_state_hist).most_common(1)[0][0]
-                else:
-                    smoothed_rule_state = raw_rule_state
-                raw_rule_info_str = f"{raw_rule_state[:10]} ({rule_confidence:.2f})"
-                if apply_rule_smoothing and raw_rule_state != smoothed_rule_state:
-                    raw_rule_info_str += f" ->Sm:{smoothed_rule_state[:10]}"
-
-                if ml_model_instance:
-                    numerical_features = feat_ext.get_numerical_feature_vector()
-                    if ml_model_selected_features:
-                        if len(numerical_features) >= max(ml_model_selected_features) + 1 :
-                            numerical_features = numerical_features[ml_model_selected_features]
-                        else:
-                            logging.warning("ML feature selection indices out of bounds for current features. Using all features for ML prediction.")
-
-                    ml_feature_seq_hist.append(numerical_features)
-                    if len(ml_feature_seq_hist) == ML_SEQ_LENGTH:
-                        seq_tensor = torch.tensor(np.array(list(ml_feature_seq_hist)), dtype=torch.float32).unsqueeze(0).to(self.device) # use self.device
-                        with torch.no_grad():
-                            outputs = ml_model_instance(seq_tensor)
-                            ml_pred_probs = softmax(outputs.cpu().numpy().flatten())
-                            ml_pred_probs_np = ml_pred_probs
-                            top_idx = np.argmax(ml_pred_probs)
-                            ml_emotion_pred = EMOTION_CLASSES_V2_5[top_idx]
-                            ml_confidence = ml_pred_probs[top_idx]
-                        raw_ml_info_str = f"{ml_emotion_pred[:10]} ({ml_confidence:.2f})"
-
-                if run_hybrid_logic and ml_model_instance and ml_pred_probs_np is not None:
-                    final_emotion_to_display, final_confidence_to_display, final_source = hybrid_fusion_strategy(
-                        smoothed_rule_state, rule_confidence,
-                        ml_pred_probs_np, lambda idx: EMOTION_CLASSES_V2_5[idx]
-                    )
-                    final_state_to_display = final_emotion_to_display
-                else:
-                    final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
-                    final_state_to_display = smoothed_rule_state
-                    final_confidence_to_display = rule_confidence
-                    final_source = "Rule(S)" if apply_rule_smoothing else "Rule"
-            else: # No face detected
-                feat_ext.reset_state()
-                current_features = feat_ext.get_features_dict()
-                raw_rule_state, rule_confidence = state_mgr.classify_with_confidence(current_features)
-                if apply_rule_smoothing:
-                    rule_state_hist.append(raw_rule_state)
-                    smoothed_rule_state = Counter(rule_state_hist).most_common(1)[0][0]
-                else: smoothed_rule_state = raw_rule_state
-
-                final_emotion_to_display = map_detailed_state_to_emotion(smoothed_rule_state)
-                final_state_to_display = smoothed_rule_state
-                final_confidence_to_display = rule_confidence
-                final_source = "Rule(S)" if apply_rule_smoothing else "Rule"
-                ml_feature_seq_hist.clear()
-
-            primary_detailed_state_counts[final_state_to_display] +=1
-            primary_emotion_counts[final_emotion_to_display] +=1
-
-            overall_disp_text = "Analyzing..." if p_count < (eff_fps * 5) else None
-            draw_diagnostics_on_frame_v2_5(frame, current_features,
-                                            final_emotion_to_display, final_state_to_display, final_confidence_to_display, final_source,
-                                            face_rect_draw, landmarks_draw, overall_disp_text,
-                                            raw_rule_info=raw_rule_info_str, raw_ml_info=raw_ml_info_str)
-            out_w.write(frame); p_count+=1; fr_idx+=1
-            if time.time()-ll_t >=10.0:
-                el = time.time()-s_t; cur_fps = p_count/el if el>0 else float('inf')
-                prog = (p_count / ((tot_in_fr/a_skip) if tot_in_fr>0 and a_skip>0 else p_count or 1)) * 100
-                logging.info(f"Proc: {p_count} fr ({prog:.1f}%). FPS: {cur_fps:.1f}. HybridState: {final_state_to_display[:15]}")
-                ll_t=time.time()
-
-        cap.release(); out_w.release(); cv2.destroyAllWindows()
-        tot_t=time.time()-s_t; logging.info(f"Vid proc fin: {tot_t:.1f}s for {p_count} frames.")
-        if p_count==0: logging.warning("No frames processed."); return {}
-
-        try:
-            ffmpeg_cmd = [
-                'ffmpeg', '-y', '-i', temp_output_path, '-c:v', 'libx264', '-preset', 'fast',
-                '-movflags', '+faststart', '-pix_fmt', 'yuv420p', output_video_path
-            ]
-            subprocess.run(ffmpeg_cmd, check=True)
-            #os.remove(temp_output_path)  # Remove temp file after successful conversion
-        except Exception as e:
-            logging.error(f"FFmpeg conversion failed: {e}", exc_info=True)
-            try: os.remove(temp_output_path)  # Clean up temp file even if conversion fails
-            except Exception as clean_e: logging.warning(f"Failed to delete temp output video after FFmpeg error: {clean_e}")
-            raise RuntimeError(f"FFmpeg conversion failed: {e}")
-        
-
-        report_content_for_pdf = {}
-        overall_emo, overall_expl = state_mgr.determine_overall_condition(primary_detailed_state_counts,p_count)
-        report_content_for_pdf["overall_summary"] = {"emotion": overall_emo, "explanation": overall_expl}
-        report_content_for_pdf["emotion_distribution"] = primary_emotion_counts
-
-        avg_f_dict:Dict[str,Any]={};
-        if all_features_session and all_features_session[0]:
-            tmp_agg:Dict[str,List] = {f'avg_{k}':[] for k in all_features_session[0] if isinstance(all_features_session[0][k],(int,float))}
-            for f_dict in all_features_session:
-                for k,v in f_dict.items():
-                    if isinstance(v,(int,float)) and f'avg_{k}' in tmp_agg : tmp_agg[f'avg_{k}'].append(v)
-            for k,vals in tmp_agg.items(): avg_f_dict[k]=np.mean(vals) if vals else None
-        report_content_for_pdf["average_features"] = avg_f_dict
-
-        report_content_for_pdf["processing_summary"] = {
-            "processed_frames":p_count,"total_input_frames":tot_in_fr if tot_in_fr>0 else "Unk",
-            "avg_processing_fps":p_count/tot_t if tot_t>0 else 0,
-            "smoothing_window": f"{rule_smoothing_window} frames" if apply_rule_smoothing else "Disabled"
-        }
-
-        print("\n"+"="*70 + f"\n EYE BEHAVIOR ANALYSIS SUMMARY ({SCRIPT_VERSION})\n"+"="*70)
-        print(f" Input Video: {os.path.basename(input_video_path)}")
-        print(f" Output Video: {os.path.basename(output_video_path)}")
-        print(f" Frames Processed: {report_content_for_pdf['processing_summary']['processed_frames']}")
-        print(f" Overall Emotion (Primary System): {report_content_for_pdf['overall_summary']['emotion']}")
-        print(f" Explanation: {report_content_for_pdf['overall_summary']['explanation']}\n" + "-"*70)
-        print(" Top 3 Emotions (Primary System - % of processed frames):")
-        for i,(emo,ct) in enumerate(report_content_for_pdf.get("emotion_distribution", Counter()).most_common(3)):
-            print(f"  {i+1}. {emo}: {ct} frames ({(ct/p_count)*100:.1f}%)")
-        print("="*70 + "\n")
-        logging.info("--- Processing & Reporting Complete ---")
-
-    
-
-        return report_content_for_pdf
-
-
-
+# ------------------ MergeVideos class ------------------
 class MergeVideos(View):
     def __init__(self):
         super().__init__()
@@ -5272,7 +5537,7 @@ class MergeVideos(View):
             # Use MEDIA_ROOT for file system paths
             video_paths = [
                 os.path.join(settings.MEDIA_ROOT, f"output/posture_video_{video_uuid}.mp4"),
-                os.path.join(settings.MEDIA_ROOT, f"processed_videos/video_{video_uuid}_analyzed_v2.5_rules_opt_smooth_rules_only.mp4"),
+                os.path.join(settings.MEDIA_ROOT, f"output/eye_analysis_video_{video_uuid}.mp4"),
             ]
 
             # Verify input files exist
@@ -5318,10 +5583,6 @@ class MergeVideos(View):
         except Exception as e:
             return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
 
-
-    
-
-
 class Home(View):
     def get(self, request):
         try:
@@ -5343,26 +5604,7 @@ class Home(View):
         except Exception as e:
             #print(f"Error getting video count: {e}")
             return render(request, "index.html", {'video_count': 0})
-
-
-
-def cleanup_old_files(directory, max_age_hours=24):
-    """Remove files older than max_age_hours from the specified directory"""
-    try:
-        current_time = datetime.now()
-        for filename in os.listdir(directory):
-            filepath = os.path.join(directory, filename)
-            file_modified_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-            if (current_time - file_modified_time).total_seconds() > max_age_hours * 3600:
-                try:
-                    os.remove(filepath)
-                    #print(f"Cleaned up old file: {filepath}")
-                except OSError as e:
-                    print(f"Error removing file {filepath}: {e}")
-    except Exception as e:
-        print(f"Error during cleanup: {e}")
-
-
+# -------------------- video uploading class --------------------
 class UploadVideo(View):
     def post(self, request):
         try:

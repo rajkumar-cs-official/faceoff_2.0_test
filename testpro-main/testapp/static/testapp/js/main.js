@@ -455,11 +455,9 @@ async function processEye(formData) {
                 <div class="results-container">
                     <div class="overall-metrics">
                         <h3 class="content-heading">Detected Emotion</h3>
-
-                        <div class="emotion-badge">
-                        ${data.final_emotion}
-                        </div>
-                        
+                        <p> overall_emotion : ${data.overall_emotion}</p>
+                        <p> overall_eye_state : ${data.overall_eye_state}</p>
+                        <p> baseline_state : ${data.baseline_state}</p>
                     </div>
                     <div class="video-container">
                         <h3 class="content-heading">Analyzed Video</h3>

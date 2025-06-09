@@ -1,7 +1,7 @@
 from django.conf.urls.static import static
 from django.conf import settings
 from django.urls import path
-from .views import Deepfake, Home, UploadVideo, Posture, Eye, Face, AudioTone, HeartRate, HRV, Speech, EyeAnalysisView,MergeVideos
+from .views import Deepfake, Home, UploadVideo, Posture, Eye, Face, AudioTone, HeartRate, HRV, Speech, EyeAnalysisViewV2,MergeVideos
 from django.urls import re_path
 from django.views.static import serve
 import os
@@ -25,7 +25,7 @@ urlpatterns = [
     path('process_speech/', Speech.as_view(), name='process_speech'),
     path('process_video_v2/', Face.as_view(), name='process_video_v2'),
 #    #path('process_video_v3/', VideoAnalysisV3.as_view(), name='process_video_v3'),
-    path('process_eye/', EyeAnalysisView.as_view(), name='process_eye'),
+    path('process_eye/', EyeAnalysisViewV2.as_view(), name='process_eye'),
     path('merged_video/', MergeVideos.as_view(), name='merge_videos'),
 
 
